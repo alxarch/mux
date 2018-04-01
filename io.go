@@ -25,32 +25,38 @@ type timeouter interface {
 	Timeout() bool
 }
 
-func keepAliveReader(r io.Reader, s *Session) (io.Reader, bool) {
+func timeoutReader(r io.Reader, s *Session) io.Reader {
+	timeout := s.config.ReadTimeout
+	if timeout <= 0 {
+		return r
+	}
 	conn, ok := r.(deadlineReader)
 	if !ok {
-		return r, false
+		return r
 	}
 
 	return readerFunc(func(p []byte) (n int, err error) {
-		timeout := s.options.KeepAliveInterval
-		for i := -1; i < s.options.KeepAliveRetries; i++ {
+		for {
 			deadline := time.Now().Add(timeout)
 			if err = conn.SetReadDeadline(deadline); err != nil {
 				return
 			}
 			n, err = conn.Read(p)
-			if err != nil {
-				if e, ok := err.(timeouter); ok && e.Timeout() {
-					timeout = s.options.KeepAliveTimeout
-					go s.Ping()
-					continue
-				}
+			if err == nil {
+				return
 			}
-			break
+			if e, ok := err.(timeouter); ok && e.Timeout() {
+				go func() {
+					if _, e := s.Ping(); e != nil {
+						s.closeWithError(e)
+					}
+				}()
+			} else {
+				return
+			}
 		}
-		return
 
-	}), true
+	})
 }
 
 type deadlineWriter interface {
@@ -58,14 +64,14 @@ type deadlineWriter interface {
 	SetWriteDeadline(time.Time) error
 }
 
-func timeoutWriter(w io.Writer, s *Session) (io.Writer, bool) {
-	timeout := s.options.WriteTimeout
+func timeoutWriter(w io.Writer, s *Session) io.Writer {
+	timeout := s.config.WriteTimeout
 	if timeout <= 0 {
-		return w, false
+		return w
 	}
 	conn, ok := w.(deadlineWriter)
 	if !ok {
-		return w, false
+		return w
 	}
 	return writerFunc(func(p []byte) (n int, err error) {
 		deadline := time.Now().Add(timeout)
@@ -75,5 +81,5 @@ func timeoutWriter(w io.Writer, s *Session) (io.Writer, bool) {
 		n, err = conn.Write(p)
 		return
 
-	}), true
+	})
 }

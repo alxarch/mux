@@ -1,128 +1,89 @@
 package mux
 
 import (
+	"errors"
 	"time"
 )
 
-type sessionOptions struct {
-	MaxFrameSize      int
-	MaxWindowSize     int32
-	KeepAliveEnabled  bool
+// Config is the configuration for a Session.
+type Config struct {
+	// MaxFrameSize sets the maximum size for frames.
+	MaxFrameSize int
+	// MaxWindowSize sets the maximum window size for new streams.
+	MaxWindowSize int32
+	// KeepAliveEnabled enables periodic keep alive pings.
+	KeepAliveEnabled bool
+	// KeepAliveInterval sets keep alive ping interval.
 	KeepAliveInterval time.Duration
-	KeepAliveTimeout  time.Duration
-	KeepAliveRetries  int
-	AcceptBacklog     int
-	RecvBufferSize    int
-	SendBufferSize    int
-	WriteTimeout      time.Duration
+	// KeepAliveTimeout sets keep alive ping timeout.
+	KeepAliveTimeout time.Duration
+	// AcceptBacklog sets the max number of queued accept/open streams.
+	// An opened stream is queued until it receives a frame with ACK flag set.
+	// An accepted stream is queued until it is returned from Accept() method.
+	AcceptBacklog int
+	// RecvBufferSize sets the receive buffer size.
+	RecvBufferSize int
+	// SendBufferSize sets the send buffer size.
+	SendBufferSize int
+	// ReadTimeout sets the read timeout.
+	// If the session's conn has a SetReadDeadline(time.Time)error method
+	// the session will set the deadline before every read,
+	// send a ping if a timeout error occurs to verify connection's health and
+	// close itself if the ping fails.
+	ReadTimeout time.Duration
+	// WriteTimeout sets the write timeout.
+	// If the session's conn has a SetWriteDeadline(time.Time)error method
+	// the session will set the deadline before every write and close itself
+	// if a timeout occurs.
+	WriteTimeout time.Duration
 }
 
 const (
 	initialAcceptBacklog = 16
 	maxFrameSize         = 1<<16 - headerSize
-	minFrameSize         = 4096 - headerSize
-	minBufferSize        = 512
+	minBufferSize        = 256
 )
 
-func defaultOptions() sessionOptions {
-	return sessionOptions{
+// Verify checks for configuration errors.
+func (c *Config) Verify() error {
+	if c.AcceptBacklog < initialAcceptBacklog {
+		return errors.New("Invalid accept backlog")
+	}
+	if c.MaxWindowSize < initialWindowSize {
+		return errors.New("Invalid window size")
+	}
+	if c.KeepAliveEnabled {
+		if c.KeepAliveInterval < 1 {
+			return errors.New("Invalid keep alive interval")
+		}
+		if c.KeepAliveTimeout < 1 {
+			return errors.New("Invalid keep alive timeout")
+		}
+	}
+	if c.MaxFrameSize < (minBufferSize - headerSize) {
+		return errors.New("Invalid max frame size")
+	}
+	if c.SendBufferSize < minBufferSize {
+		return errors.New("Invalid send buffer size")
+	}
+	if c.RecvBufferSize < minBufferSize {
+		return errors.New("Invalid receive buffer size")
+	}
+	return nil
+}
+
+// DefaultConfig returns the default configuration.
+func DefaultConfig() *Config {
+	return &Config{
 		MaxFrameSize:      8192 - headerSize,
 		MaxWindowSize:     initialWindowSize,
-		KeepAliveEnabled:  true,
-		KeepAliveRetries:  4,
+		KeepAliveEnabled:  false,
 		KeepAliveInterval: 30 * time.Second,
 		KeepAliveTimeout:  5 * time.Second,
 		WriteTimeout:      10 * time.Second,
+		ReadTimeout:       30 * time.Second,
 		AcceptBacklog:     initialAcceptBacklog,
 		RecvBufferSize:    8192,
 		SendBufferSize:    8192,
-	}
-}
-
-// Option is session option.
-type Option func(s *Session)
-
-// DisableKeepAlive disables keep alive for a session.
-func DisableKeepAlive() Option {
-	return func(s *Session) {
-		s.options.KeepAliveEnabled = false
-	}
-}
-
-// MaxWindowSize sets receive window size for a session.
-func MaxWindowSize(size int) Option {
-	return func(s *Session) {
-		if size < initialWindowSize {
-			size = initialWindowSize
-		}
-		s.options.MaxWindowSize = int32(size)
-	}
-}
-
-// MaxFrameSize sets max individual frame size for a session.
-func MaxFrameSize(size int) Option {
-	return func(s *Session) {
-		if size < minFrameSize {
-			size = minFrameSize
-		}
-		if size > maxFrameSize {
-			size = maxFrameSize
-		}
-		s.options.MaxFrameSize = size
-	}
-}
-
-// RecvBufferSize sets the read buffer size for a session.
-func RecvBufferSize(size int) Option {
-	return func(s *Session) {
-		if size < minBufferSize {
-			size = minBufferSize
-		}
-		s.options.RecvBufferSize = size
-	}
-}
-
-// SendBufferSize sets the write buffer size for a session.
-func SendBufferSize(size int) Option {
-	return func(s *Session) {
-		if size < minBufferSize {
-			size = minBufferSize
-		}
-		s.options.SendBufferSize = size
-	}
-}
-
-// AcceptBacklog sets the accept backlog for opened/accepted streams.
-func AcceptBacklog(backlog int) Option {
-	return func(s *Session) {
-		if backlog > initialAcceptBacklog {
-			s.options.AcceptBacklog = backlog
-		}
-	}
-}
-
-// KeepAlive enables keep alive and sets interval/timeout/retries for it.
-func KeepAlive(interval, timeout time.Duration, retries int) Option {
-	return func(s *Session) {
-		s.options.KeepAliveEnabled = true
-		if retries < 0 {
-			retries = 0
-		}
-		s.options.KeepAliveRetries = retries
-		if interval < time.Second {
-			interval = time.Second
-		}
-		s.options.KeepAliveInterval = interval
-		if timeout < 5*time.Millisecond {
-			timeout = 5 * time.Millisecond
-		}
-		s.options.KeepAliveTimeout = timeout
-	}
-}
-
-// SetWriteTimeout sets write timeout for a session.
-func SetWriteTimeout(timeout time.Duration) Option {
-	return func(s *Session) {
-		s.options.WriteTimeout = timeout
 	}
 }

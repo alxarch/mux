@@ -17,11 +17,12 @@ type Session struct {
 	err  error
 	done chan struct{}
 
+	client uint32
+	config *Config
+	conn   io.ReadWriteCloser
+	pings  pings
 	opened chan struct{}
 	accept chan *Stream
-	client uint32
-	pings  pings
-	conn   io.ReadWriteCloser
 	recv   *bufio.Reader
 
 	streamLock sync.RWMutex
@@ -30,15 +31,18 @@ type Session struct {
 
 	sendLock sync.Mutex
 	send     *bufio.Writer
-
-	options sessionOptions
 }
 
 // New creates a new session
-func New(conn io.ReadWriteCloser, client bool, options ...Option) *Session {
+func New(conn io.ReadWriteCloser, client bool, config *Config) (*Session, error) {
+	if config == nil {
+		config = DefaultConfig()
+	} else if err := config.Verify(); err != nil {
+		return nil, err
+	}
 	s := Session{
 		done:    make(chan struct{}),
-		options: defaultOptions(),
+		config:  config,
 		conn:    conn,
 		streams: make(map[uint32]*Stream),
 	}
@@ -48,31 +52,36 @@ func New(conn io.ReadWriteCloser, client bool, options ...Option) *Session {
 	} else {
 		s.nextID = 2
 	}
-	for _, o := range options {
-		if o != nil {
-			o(&s)
-		}
-	}
+	s.accept = make(chan *Stream, s.config.AcceptBacklog)
+	s.opened = make(chan struct{}, s.config.AcceptBacklog)
 	// Set up i/o
 	{
-		w, _ := timeoutWriter(conn, &s)
-		s.send = bufio.NewWriterSize(w, s.options.SendBufferSize)
+		w := timeoutWriter(conn, &s)
+		s.send = bufio.NewWriterSize(w, s.config.SendBufferSize)
 	}
 	{
-		r, ok := keepAliveReader(conn, &s)
-		s.recv = bufio.NewReaderSize(r, s.options.RecvBufferSize)
-		if !ok && s.options.KeepAliveEnabled {
-			go s.keepAlive()
-		}
+		r := timeoutReader(conn, &s)
+		s.recv = bufio.NewReaderSize(r, s.config.RecvBufferSize)
 	}
-	s.accept = make(chan *Stream, s.options.AcceptBacklog)
-	s.opened = make(chan struct{}, s.options.AcceptBacklog)
 	go func() {
 		if err := s.recvLoop(); err != nil {
 			s.closeWithError(err)
 		}
 	}()
-	return &s
+	if s.config.KeepAliveEnabled {
+		go s.keepAlive()
+	}
+	return &s, nil
+}
+
+// Server creates a new server session
+func Server(conn io.ReadWriteCloser, config *Config) (*Session, error) {
+	return New(conn, false, config)
+}
+
+// Client creates a new server session
+func Client(conn io.ReadWriteCloser, config *Config) (*Session, error) {
+	return New(conn, true, config)
 }
 
 func (s *Session) flush() (err error) {
@@ -113,8 +122,8 @@ func (s *Session) pushData(sid uint32, data []byte) (n int, err error) {
 	putFrame(h[:], typeData, 0, sid, 0)
 	for len(data) > 0 && err == nil {
 		nn := len(data)
-		if nn > s.options.MaxFrameSize {
-			nn = s.options.MaxFrameSize
+		if nn > s.config.MaxFrameSize {
+			nn = s.config.MaxFrameSize
 		}
 		binary.BigEndian.PutUint32(h[8:], uint32(nn))
 		s.sendLock.Lock()
@@ -178,7 +187,7 @@ func (s *Session) Open() (str *Stream, err error) {
 }
 
 func (s *Session) keepAlive() (err error) {
-	tick := time.NewTicker(s.options.KeepAliveInterval)
+	tick := time.NewTicker(s.config.KeepAliveInterval)
 	errs := make(chan error)
 	for {
 		select {
@@ -363,7 +372,7 @@ func (p *pings) close(sid uint32) {
 // Ping sends a ping frame to the other session and measures response time.
 func (s *Session) Ping() (rtt time.Duration, err error) {
 	now := time.Now()
-	deadline := time.NewTimer(s.options.KeepAliveTimeout)
+	deadline := time.NewTimer(s.config.KeepAliveTimeout)
 	defer deadline.Stop()
 	sid, done := s.pings.new()
 	defer s.pings.close(sid)

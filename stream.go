@@ -29,7 +29,7 @@ func newStream(session *Session, sid uint32) *Stream {
 			window:  initialWindowSize,
 		},
 		recvWindow: initialWindowSize,
-		recvDelta:  session.options.MaxWindowSize - initialWindowSize,
+		recvDelta:  session.config.MaxWindowSize - initialWindowSize,
 	}
 	str.send.state |= stateWritable
 	return &str
